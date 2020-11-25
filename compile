@@ -1,0 +1,1 @@
+g++ main.cpp -o webserve -g -Wall -Wextra -I.
