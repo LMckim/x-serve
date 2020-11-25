@@ -1,0 +1,4 @@
+FLAGS="-I.. -g -O3 -Wall -Wextra"
+cd /home/luke/webserve/tests
+g++ std_test.cpp -o std_test $FLAGS
+./std_test

@@ -1,2 +1,8 @@
+/.vscode/
 /assets/
+
+/tests/std_test
+
 webserve
+boot
+q_test

@@ -7,7 +7,12 @@
 #include <string.h>
 #include <vector>
 
+#include "inc/std.h"
+
 #define HEADER_BUF 8192
+#define MAX_HTTP_LINE 512
+#define FILE_READ_SIZE 4096
+#define DEFAULT_RESPONSE_SIZE 4096
 
 namespace compose{
 
@@ -18,7 +23,7 @@ namespace compose{
 
     class composer{
         public:
-        enum METHODS{
+        enum METHOD{
             OPTIONS,
             GET,
             HEAD,
@@ -28,7 +33,7 @@ namespace compose{
             TRACE,
             CONNECT
         };
-        enum RESPONSE_CODES{
+        enum RESPONSE_CODE{
           CONTINUE              = 100,//  ; Section 10.1.1: Continue
           SWITCH_PROTO          = 101,//  ; Section 10.1.2: Switching Protocols
           OK                    = 200,//  ; Section 10.2.1: OK
@@ -71,10 +76,16 @@ namespace compose{
           HTTP_VER_NS           = 505,//  ; Section 10.5.6: HTTP Version not supported
         };
 
-        composer(const char* _home_dir) : home_dir{_home_dir} {
+        composer(const string* _home_dir, const string* _index_path) 
+            : home_dir{_home_dir}, index_path{_index_path} 
+            {
             // https://en.wikipedia.org/wiki/List_of_HTTP_header_fields
             // initialize our request header map
             // dont have all of them here, see above
+            this->req_headers["METHOD"]                 = "";
+            this->req_headers["FILE"]                   = "";
+            this->req_headers["HTTP_VERSION"]           = "";
+
             this->req_headers["Accept"]                 = "";
             this->req_headers["Accept-Charset"]         = "";
             this->req_headers["Accept-Encoding"]        = "";
@@ -98,15 +109,15 @@ namespace compose{
             // dont have all of them here, see above
             this->resp_headers["HTTP_VERSION"]          = "HTTP/1.1";
             this->resp_headers["SERVER_NAME"]           = "XSERVE";
-            this->resp_headers["Age"]                   = "";
-            this->resp_headers["Allow"]                 = "";
-            this->resp_headers["Cache-Control"]         = "";
-            this->resp_headers["Connection"]            = "";
+            this->resp_headers["Age"]                   = "0";
+            this->resp_headers["Allow"]                 = "GET, POST";
+            this->resp_headers["Cache-Control"]         = "no-cache";
+            this->resp_headers["Connection"]            = "keep-open";
             this->resp_headers["Content-Dispostion"]    = "";
             this->resp_headers["Content-Encoding"]      = "";
             this->resp_headers["Content-Length"]        = "";
             this->resp_headers["Content-MD5"]           = "";
-            this->resp_headers["Content-Type"]          = "";
+            this->resp_headers["Content-Type"]          = "text/html; charset=utf-8";
             this->resp_headers["Date"]                  = "";
             this->resp_headers["Expires"]               = "";
             this->resp_headers["Last-Modifed"]          = "";
@@ -115,69 +126,239 @@ namespace compose{
             this->resp_headers["Warning"]               = "";
             this->resp_headers["WWW-Authenticate"]      = "";
 
+            // initialize stuff
+            this->response_content.reserve(DEFAULT_RESPONSE_SIZE);
+
         }
-        void process_request(const char *in, char *out, size_t outSize){
+        void process_request(const char *in, string *response){
+            auto s_time = h_clock::now();
+
+            RESPONSE_CODE r_code;
             printf("Connection\n");
             // printf("IN: %s\n", in);
-            this->process_headers(in, out, outSize);
+            this->process_headers(in);
+            // fetch content
+            string content_path = *this->home_dir;
+            if(this->req_headers["FILE"] != ""){
+                if(this->req_headers["FILE"] == "/"){
+                    content_path.append(*this->index_path);
+                    r_code = this->load_content(&content_path);
+                }else{
+                    content_path.append(this->req_headers["FILE"]);
+                    r_code = this->load_content(&content_path);
+                }
+            }else{
+                r_code = RESPONSE_CODE::BAD_REQUEST;
+            }
+            // build response headers
+            this->build_response_headers(&r_code);
+            // build response
+            *response = this->response_header + this->response_content;
+            this->response_header.clear();
+            this->response_content.clear();
+
+            std::chrono::nanoseconds diff = h_clock::now() - s_time;
+            std::chrono::microseconds t = std::chrono::duration_cast<std::chrono::microseconds>(diff);
+            printf("Operations took: %s microseconds\n", std::to_string(t.count()).c_str());
         }
 
         private:
-        const char *home_dir;
-        const string ver = "HTTP/1.1";
-        const string serverName = "luke/v0.1";
+        const string *home_dir;
+        const string *index_path;
         string err_msg;
+
+        string response_header;
+        string response_content;
 
         map<string, string> resp_headers;
         map<string, string> req_headers;
 
-        void process_headers(const char *in, char *out, size_t outSize){
+        void process_headers(const char *req){
             // track execution time
-            auto s_time = h_clock::now();
-            size_t pos = 0, ppos = 0;
-            string headers(in);
-            string header;
-            vector<string> headlines;
-            while((pos = headers.find('\n', ppos)) != string::npos){
-                header = headers.substr(ppos, pos - ppos);
-                headlines.push_back(header);
-                ppos = pos + 1;
+            vector<string> split;
+            string headers(req), line;
+            line.reserve(MAX_HTTP_LINE);
 
-                if(header.find("GET") != string::npos){
-                    size_t fpos, fepos;
-                    if((fpos = header.find("/")) != string::npos){
-                        fepos = header.find(" ",fpos);
-                        // string GET_file(this->home_dir);
-                        string GET_file = header.substr(fpos,fepos-fpos);
-                        if(GET_file == "/"){
-                            printf("Sending base req\n");
-                            FILE *fp = fopen("assets/html/response.html","r");
-                            fread(out, sizeof(char), outSize, fp);
-                            fclose(fp);
-                        }else{
-                            GET_file = this->home_dir + GET_file;
-                            FILE *fp = fopen(GET_file.c_str(),"r");
-                            if(fp == 0){
-                                this->err_msg = "File not found" + GET_file + "\n";
-                                printf("%s\n", this->err_msg.c_str());
-                                strcpy(out,"HTTP/1.1 404 File Not Found\n\n");
-                            }else{
-                                fread(out, sizeof(char), outSize, fp);
-                                fclose(fp);
-                            }
-                        }
-                        
+            size_t s_pos = 0, el_pos;
+            while((el_pos = headers.find("\n", s_pos)) != string::npos){
+                line = headers.substr(s_pos, el_pos - s_pos);
+                // first line, get the request method, req file and http version
+                if(s_pos == 0){
+                    split = StringOps::splitString(&line,' ');
+                    this->req_headers["METHOD"] = split[0];   
+                    this->req_headers["FILE"] = split[1];   
+                    this->req_headers["HTTP_VERSION"] = split[2];   
+                }else{
+                    split = StringOps::splitString(&line, ':');
+                    if(split.size() < 2){
+                        if(line != "\n") printf("Unidentified header: %s\n", line.c_str());
+                    }else{
+                        this->req_headers[ split[0] ] = split[1];
                     }
-
                 }
+                s_pos = el_pos + 1;
             }
-            auto diff = h_clock::now() - s_time;
-            auto  t = std::chrono::duration_cast<std::chrono::microseconds>(diff);
-            printf("Operations took: %s microseconds\n", std::to_string(t.count()).c_str());
         }
+        void build_response_headers(RESPONSE_CODE *r_code){
+            this->response_header = 
+                this->resp_headers["HTTP_VERSION"] + 
+                " " +
+                std::to_string(static_cast<int>(*r_code)) +
+                " " +
+                this->get_response_text(r_code) + 
+                "\n";
 
-        vector<string> process_headers(const char *in){
-
+            for(auto i : this->resp_headers){
+                if(i.second == "") continue;
+                this->response_header.append(i.first);
+                this->response_header.append(": ");
+                this->response_header.append(i.second);
+                this->response_header.append("\n");
+                
+            }
+            this->response_header += "\n";
+        }
+        RESPONSE_CODE load_content(const string *path){
+            FILE *fp = fopen(path->c_str(),"r");
+            if(fp == 0) return RESPONSE_CODE::NOT_FOUND;
+            // check we didnt
+            char read_buf[DEFAULT_RESPONSE_SIZE] = {'\0'};
+            while(!feof(fp)){
+                fread(read_buf, sizeof(char), DEFAULT_RESPONSE_SIZE, fp);
+                this->response_content.append(read_buf);
+            }
+            fclose(fp);
+            this->resp_headers["Content-Length"] = std::to_string(this->response_content.length());
+            return RESPONSE_CODE::OK;
+        }
+        string get_response_text(RESPONSE_CODE *code){
+            string text;
+            switch (*code){
+                case RESPONSE_CODE::CONTINUE:
+                    text = "Continue";
+                break;
+                case RESPONSE_CODE::SWITCH_PROTO:
+                    text = "Switching Protocols";
+                break;
+                case RESPONSE_CODE::OK:
+                    text = "OK";
+                break;
+                case RESPONSE_CODE::CREATED:
+                    text = "Created";
+                break;
+                case RESPONSE_CODE::ACCEPTED:
+                    text = "Accepted";
+                break;
+                case RESPONSE_CODE::NON_AUTH:
+                    text = "Non-Authoritative Information";
+                break;
+                case RESPONSE_CODE::NO_CONTENT:
+                    text = "No Content";
+                break;
+                case RESPONSE_CODE::RESET_CONT:
+                    text = "Reset Content";
+                break;
+                case RESPONSE_CODE::PARTIAL_CONT:
+                    text = "Partial Content";
+                break;
+                case RESPONSE_CODE::MULTIPLE_CHOICE:
+                    text = "Multiple Choices";
+                break;
+                case RESPONSE_CODE::MOVED_PERM:
+                    text = "Moved Permanently";
+                break;
+                case RESPONSE_CODE::FOUND:
+                    text = "Found";
+                break;
+                case RESPONSE_CODE::SEE_OTHER:
+                    text = "See Other";
+                break;
+                case RESPONSE_CODE::NOT_MODIFIED:
+                    text = "Not Modified";
+                break;
+                case RESPONSE_CODE::USE_PROXY:
+                    text = "Use Proxy";
+                break;
+                case RESPONSE_CODE::TEMP_REDIRECT:
+                    text = "Temporary Redirect";
+                break;
+                case RESPONSE_CODE::BAD_REQUEST:
+                    text = "Bad Request";
+                break;
+                case RESPONSE_CODE::UNAUTH:
+                    text = "Unauthorized";
+                break;
+                case RESPONSE_CODE::PAY_REQ:
+                    text = "Payment Required";
+                break;
+                case RESPONSE_CODE::FORBIDDEN:
+                    text = "Forbidden";
+                break;
+                case RESPONSE_CODE::NOT_FOUND:
+                    text = "Not Found";
+                break;
+                case RESPONSE_CODE::METHOD_NOT_ALLOWED:
+                    text = "Method Not Allowed";
+                break;
+                case RESPONSE_CODE::NOT_ACCEPTABLE:
+                    text = "Not Acceptable";
+                break;
+                case RESPONSE_CODE::PROXY_AUTH_REQ:
+                    text = "Proxy Authentication Required";
+                break;
+                case RESPONSE_CODE::REQ_TIMEOUT:
+                    text = "Request Time-out";
+                break;
+                case RESPONSE_CODE::CONFLICT:
+                    text = " Conflict";
+                break;
+                case RESPONSE_CODE::GONE:
+                    text = " Gone";
+                break;
+                case RESPONSE_CODE::LENGTH_REQ:
+                    text = " Length Required";
+                break;
+                case RESPONSE_CODE::PRECOND_FAILED:
+                    text = " Precondition Failed";
+                break;
+                case RESPONSE_CODE::REQ_ENT_TOO_LARGE:
+                    text = " Request Entity Too Large";
+                break;
+                case RESPONSE_CODE::REQ_URI_TOO_LARGE:
+                    text = " Request-URI Too Large";
+                break;
+                case RESPONSE_CODE::UNSUPPORTED_MEDIA:
+                    text = " Unsupported Media Type";
+                break;
+                case RESPONSE_CODE::REQ_RANGE_NS:
+                    text = " Requested range not satisfiable";
+                break;
+                case RESPONSE_CODE::EXPECTATION_FAILED:
+                    text = " Expectation Failed";
+                break;
+                case RESPONSE_CODE::INTERNAL_SERVER_ERR:
+                    text = "Internal Server Error";
+                break;
+                case RESPONSE_CODE::NOT_IMPLEMENTED:
+                    text = "Not Implemented";
+                break;
+                case RESPONSE_CODE::BAD_GATEWAY:
+                    text = "Bad Gateway";
+                break;
+                case RESPONSE_CODE::SERVICE_UNAVAIL:
+                    text = "Service Unavailable";
+                break;
+                case RESPONSE_CODE::GATEWAY_TIMEOUT:
+                    text = "Gateway Time-out";
+                break;
+                case RESPONSE_CODE::HTTP_VER_NS:
+                    text = "HTTP Version not supported";
+                break;
+            
+                default:
+                    text = "Internal server Error";
+                }
+            return text;
         }
     };
 }

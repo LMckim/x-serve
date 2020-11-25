@@ -1,5 +1,5 @@
-#include <inc/conn.h>
-#include <inc/comp.h>
+#include "inc/conn.h"
+#include "inc/comp.h"
 #include <csignal>
 
 #define PORT 7070
@@ -18,10 +18,11 @@ int main(){
     signal(SIGINT, handler);
     signal(SIGSEGV, handler);
 
-    const char *path = "/home/luke/webserve";
+    const string path = "/home/luke/webserve";
+    const string index = "/assets/html/response.html";
 
     sock = new sys_sock(PORT);
-    composer comp = composer(path);
+    composer comp = composer(&path, &index);
     sock->open();
     sock->listen_to(&comp);
     delete sock;

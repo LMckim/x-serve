@@ -72,6 +72,7 @@ namespace serve_sys{
         }
 
         void listen_to(compose::composer *composer){
+            string response;
             this->result = listen(this->sockfd, BACKLOG);
             if(this->result != 0){
                 throw WebServeException("Could not initiate listen");
@@ -88,15 +89,15 @@ namespace serve_sys{
                     sizeof(this->inbuf),
                     0
                 );
-                
-                composer->process_request(this->inbuf, this->outbuf, sizeof(this->outbuf));
+                // send our request
+                composer->process_request(this->inbuf, &response);
                 this->result = send(
                     this->active_sock,
-                    &this->outbuf,
-                    strlen(this->outbuf),
+                    response.c_str(),
+                    response.length(),
                     0
                 );
-
+                response.clear();
                 shutdown(this->active_sock, 2);
                 close(this->active_sock);
                 memset(this->inbuf,'\0',BUF_RECV_SIZE);
